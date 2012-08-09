@@ -49,7 +49,42 @@
 
 #include "compat/daemon.h"
 
-static int	b_flag, c_flag;
+static int	a_flag, b_flag, c_flag;
+
+static FILE	*logoutput = NULL;
+static const char *t_arg = NULL;
+
+/*--------------------------------------------------------------------*/
+
+static volatile sig_atomic_t reopen;
+
+static void
+sighup(int sig)
+{
+
+	(void)sig;
+	reopen = 1;
+}
+
+static int
+open_log(const char *w_arg)
+{
+	int fd, flags;
+
+	flags = (a_flag ? O_APPEND : O_TRUNC) | O_WRONLY | O_CREAT;
+#ifdef O_LARGEFILE
+	flags |= O_LARGEFILE;
+#endif
+	if (!strcmp(w_arg, "-"))
+		fd = STDOUT_FILENO;
+	else
+		fd = open(w_arg, flags, 0644);
+	if (fd < 0) {
+		perror(w_arg);
+		exit(1);
+	}
+	return (fd);
+}
 
 /* Ordering-----------------------------------------------------------*/
 
@@ -65,7 +100,7 @@ h_order_finish(int fd, struct VSM_data *vd)
 
 	AZ(VSB_finish(ob[fd]));
 	if (VSB_len(ob[fd]) > 1 && VSL_Matched(vd, bitmap[fd])) {
-		printf("%s", VSB_data(ob[fd]));
+		fprintf(logoutput, "%s", VSB_data(ob[fd]));
 	}
 	bitmap[fd] = 0;
 	VSB_clear(ob[fd]);
@@ -106,9 +141,22 @@ h_order(void *priv, enum VSL_tag_e tag, unsigned fd, unsigned len,
 	type = (spec & VSL_S_CLIENT) ? 'c' :
 	    (spec & VSL_S_BACKEND) ? 'b' : '-';
 
+	if (reopen && t_arg) {
+		if (fclose(logoutput) == EOF) {
+			perror(t_arg);
+			exit(1);
+		}
+		logoutput = fdopen(open_log(t_arg), "w");
+		if (logoutput == NULL) {
+			perror(t_arg);
+			exit(1);
+		}
+		reopen = 0;
+	}
+
 	if (!(spec & (VSL_S_CLIENT|VSL_S_BACKEND))) {
 		if (!b_flag && !c_flag)
-			(void)VSL_H_Print(stdout, tag, fd, len, spec, ptr, bm);
+			(void)VSL_H_Print(logoutput, tag, fd, len, spec, ptr, bm);
 		return (0);
 	}
 	if (ob[fd] == NULL) {
@@ -192,7 +240,7 @@ do_order(struct VSM_data *vd)
 		i = VSL_Dispatch(vd, h_order, vd);
 		if (i == 0) {
 			clean_order(vd);
-			AZ(fflush(stdout));
+			AZ(fflush(logoutput));
 		}
 		else if (i < 0)
 			break;
@@ -200,45 +248,13 @@ do_order(struct VSM_data *vd)
 	clean_order(vd);
 }
 
-/*--------------------------------------------------------------------*/
-
-static volatile sig_atomic_t reopen;
-
 static void
-sighup(int sig)
-{
-
-	(void)sig;
-	reopen = 1;
-}
-
-static int
-open_log(const char *w_arg, int a_flag)
-{
-	int fd, flags;
-
-	flags = (a_flag ? O_APPEND : O_TRUNC) | O_WRONLY | O_CREAT;
-#ifdef O_LARGEFILE
-	flags |= O_LARGEFILE;
-#endif
-	if (!strcmp(w_arg, "-"))
-		fd = STDOUT_FILENO;
-	else
-		fd = open(w_arg, flags, 0644);
-	if (fd < 0) {
-		perror(w_arg);
-		exit(1);
-	}
-	return (fd);
-}
-
-static void
-do_write(struct VSM_data *vd, const char *w_arg, int a_flag)
+do_write(struct VSM_data *vd, const char *w_arg)
 {
 	int fd, i, l;
 	uint32_t *p;
 
-	fd = open_log(w_arg, a_flag);
+	fd = open_log(w_arg);
 	XXXAN(fd >= 0);
 	(void)signal(SIGHUP, sighup);
 	while (1) {
@@ -255,7 +271,7 @@ do_write(struct VSM_data *vd, const char *w_arg, int a_flag)
 		}
 		if (reopen) {
 			AZ(close(fd));
-			fd = open_log(w_arg, a_flag);
+			fd = open_log(w_arg);
 			XXXAN(fd >= 0);
 			reopen = 0;
 		}
@@ -278,15 +294,16 @@ int
 main(int argc, char * const *argv)
 {
 	int c;
-	int a_flag = 0, D_flag = 0, O_flag = 0, u_flag = 0, m_flag = 0;
+	int D_flag = 0, O_flag = 0, u_flag = 0, m_flag = 0;
 	const char *P_arg = NULL;
 	const char *w_arg = NULL;
 	struct vpf_fh *pfh = NULL;
 	struct VSM_data *vd;
 
+	logoutput = stdout;
 	vd = VSM_New();
 
-	while ((c = getopt(argc, argv, VSL_ARGS "aDP:uVw:oO")) != -1) {
+	while ((c = getopt(argc, argv, VSL_ARGS "aDP:uVw:t:oO")) != -1) {
 		switch (c) {
 		case 'a':
 			a_flag = 1;
@@ -318,6 +335,9 @@ main(int argc, char * const *argv)
 			exit(0);
 		case 'w':
 			w_arg = optarg;
+			break;
+		case 't':
+			t_arg = optarg;
 			break;
 		case 'm':
 			m_flag = 1;
@@ -356,17 +376,26 @@ main(int argc, char * const *argv)
 		VPF_Write(pfh);
 
 	if (w_arg != NULL)
-		do_write(vd, w_arg, a_flag);
+		do_write(vd, w_arg);
+
+	if (t_arg != NULL) {
+		(void)signal(SIGHUP, sighup);
+		logoutput = fdopen(open_log(t_arg), "w");
+		if (logoutput == NULL) {
+			perror(t_arg);
+			exit(1);
+		}
+	}
 
 	if (u_flag)
-		setbuf(stdout, NULL);
+		setbuf(logoutput, NULL);
 
 	if (!O_flag)
 		do_order(vd);
 
-	while (VSL_Dispatch(vd, VSL_H_Print, stdout) >= 0) {
-		if (fflush(stdout) != 0) {
-			perror("stdout");
+	while (VSL_Dispatch(vd, VSL_H_Print, logoutput) >= 0) {
+		if (fflush(logoutput) != 0) {
+			perror("fflush");
 			break;
 		}
 	}

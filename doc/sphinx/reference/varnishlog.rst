@@ -20,7 +20,7 @@ SYNOPSIS
 
 varnishlog [-a] [-b] [-C] [-c] [-D] [-d] [-I regex] [-i tag] [-k keep] 
 [-n varnish_name] [-o] [-O] [-m tag:regex ...] [-P file] [-r file] [-s num] [-u] [-V]
-[-w file] [-X regex] [-x tag]
+[-w file] [-t file] [-X regex] [-x tag]
 
 DESCRIPTION
 ===========
@@ -75,10 +75,14 @@ The following options are available:
 
 -V          Display the version number and exit.
 
--w file     Write log entries to file instead of displaying them.  The file 
-   	    will be overwritten unless the -a option was specified. If 
-	    varnishlog receives a SIGHUP while writing to a file, it will 
-	    reopen the file, allowing the old one to be rotated away.
+-w file     Write raw log entries to file instead of displaying them.
+            The file can then be read using -r option.
+            It will be overwritten unless the -a option was specified. If
+            varnishlog receives a SIGHUP while writing to a file, it will
+            reopen the file, allowing the old one to be rotated away.
+
+-t file     Write text log entries to file instead of displaying them.
+            The option can be combined with -a to avoid overwriting the file.
 
 -X regex    Exclude log entries which match the specified regular expression.
 
